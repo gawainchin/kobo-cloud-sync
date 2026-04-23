@@ -1,5 +1,7 @@
 # Kobo Cloud Sync
 
+![Kobo Cloud Sync hero image showing Kobo library metadata, cover images, and highlights syncing to Markdown](docs/assets/kobo-cloud-sync-hero.png)
+
 Sync Kobo cloud library metadata, cover images, and reader highlights to Markdown.
 
 ## What It Does
