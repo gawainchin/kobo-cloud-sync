@@ -1,33 +1,143 @@
-import sys
+import argparse
+from pathlib import Path
+from typing import Optional
 
-from .login import check_session
-from .export_flow import export_annotations
+from . import __version__
+from .config import MARKDOWN_DIR, STATE_FILE
+from .export_flow import list_library_books
+from .login import check_session, import_cookies, login_interactive
 from .parser import parse_export
-from .publisher import publish_book
+from .publisher import publish_books
 from .state import State
-from .config import STATE_FILE
 
 
-def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
+def _cmd_login(args: argparse.Namespace) -> int:
+    if check_session():
+        print("Existing Kobo session is already valid.")
+        return 0
 
-    if cmd == "login":
-        print("Login not yet implemented. Edit src/kobo_cloud_sync/login.py.")
+    if login_interactive(timeout_seconds=args.timeout, close_browser=not args.keep_open):
+        print("Kobo login successful.")
+        return 0
 
-    elif cmd == "dry-run":
-        print("Dry-run not yet implemented.")
+    print("Kobo login was not detected. Please try again.")
+    return 1
 
-    elif cmd == "sync":
-        state = State(STATE_FILE)
-        print(f"Sync not yet implemented. State: {len(state.books)} books loaded.")
 
-    elif cmd == "parse":
-        if len(sys.argv) < 3:
-            print("Usage: kobo-cloud parse <file>")
-        else:
-            from pathlib import Path
-            book = parse_export(Path(sys.argv[2]))
-            print(f"Parsed: {book.title} by {book.author}")
+def _cmd_import_cookies(args: argparse.Namespace) -> int:
+    count = import_cookies(args.cookies_file)
+    print(f"Imported {count} Kobo cookies into the browser profile.")
+    return 0
 
-    else:
-        print("Usage: kobo-cloud [login|dry-run|sync|parse]")
+
+def _cmd_dry_run(args: argparse.Namespace) -> int:
+    books = list_library_books(page_size=args.page_size)
+    print(f"Found {len(books)} Kobo library books.")
+    for book in books:
+        author = f" by {book.author}" if book.author else ""
+        status = f" [{book.status}]" if book.status else ""
+        print(f"- {book.title}{author}{status}")
+    return 0
+
+
+def _cmd_sync(args: argparse.Namespace) -> int:
+    books = list_library_books(
+        page_size=args.page_size,
+        include_annotations=not args.no_highlights,
+    )
+    state = State(args.state_file)
+    for book in books:
+        state.books[book.id] = book
+    state.save()
+
+    paths = publish_books(books, args.output_dir)
+    print(f"Synced {len(books)} books to {args.output_dir}")
+    print(f"Downloaded covers to {args.output_dir / 'covers'}")
+    print(f"Wrote {len(paths)} Markdown files.")
+    if args.no_highlights:
+        print("Skipped highlights because --no-highlights was set.")
+    return 0
+
+
+def _cmd_parse(args: argparse.Namespace) -> int:
+    book = parse_export(args.file)
+    print(f"Parsed: {book.title} by {book.author}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="kobo-cloud",
+        description="Sync Kobo library metadata, covers, and highlights to Markdown.",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    login = subparsers.add_parser("login", help="Authenticate with Kobo")
+    login.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Seconds to wait for interactive login completion.",
+    )
+    login.add_argument(
+        "--keep-open",
+        action="store_true",
+        help="Leave the browser open after the login attempt.",
+    )
+    login.set_defaults(func=_cmd_login)
+
+    import_cookies_parser = subparsers.add_parser(
+        "import-cookies",
+        help="Import Chrome-exported Kobo cookies from a local JSON file",
+    )
+    import_cookies_parser.add_argument("cookies_file", type=Path)
+    import_cookies_parser.set_defaults(func=_cmd_import_cookies)
+
+    dry_run = subparsers.add_parser(
+        "dry-run",
+        help="List Kobo library books without writing Markdown",
+    )
+    dry_run.add_argument("--page-size", type=int, default=60)
+    dry_run.set_defaults(func=_cmd_dry_run)
+
+    sync = subparsers.add_parser(
+        "sync",
+        help="Sync Kobo library books, covers, and highlights to Markdown",
+    )
+    sync.add_argument("--page-size", type=int, default=60)
+    sync.add_argument(
+        "--output-dir",
+        type=Path,
+        default=MARKDOWN_DIR,
+        help="Directory for generated Markdown files.",
+    )
+    sync.add_argument(
+        "--state-file",
+        type=Path,
+        default=STATE_FILE,
+        help="Path to the local state JSON file.",
+    )
+    sync.add_argument(
+        "--no-highlights",
+        action="store_true",
+        help="Skip Kobo reader annotation API calls.",
+    )
+    sync.set_defaults(func=_cmd_sync)
+
+    parse = subparsers.add_parser("parse", help="Parse a downloaded Kobo export HTML")
+    parse.add_argument("file", type=Path)
+    parse.set_defaults(func=_cmd_parse)
+
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
