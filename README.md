@@ -66,3 +66,5 @@ The package exposes a console script:
 ```bash
 kobo-cloud --help
 ```
+
+Agent workflow guidance lives in `skills/kobo-cloud-sync/SKILL.md`.
