@@ -1,0 +1,23 @@
+[project]
+name = "kobo-cloud-sync"
+version = "0.1.0"
+description = "Playwright-based Kobo Clara HD cloud sync to Obsidian"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright",
+    "obsidian-md",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+kobo-cloud = "kobo_cloud_sync.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
