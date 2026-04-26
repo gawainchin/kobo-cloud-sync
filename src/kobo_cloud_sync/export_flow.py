@@ -4,8 +4,13 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import Page, sync_playwright
 
-from .config import BROWSER_PROFILE_DIR, kobo_url
-from .login import _open_context
+from .config import kobo_url
+from .login import (
+    _is_auth_url,
+    _looks_like_browser_challenge,
+    _looks_like_login_page,
+    _open_context,
+)
 from .models import Annotation, Book
 
 
@@ -147,6 +152,19 @@ def _scrape_page(page: Page) -> list[Book]:
     return books
 
 
+def _ensure_library_access(page: Page) -> None:
+    if _looks_like_browser_challenge(page):
+        raise RuntimeError(
+            "Kobo is showing a browser verification page to Playwright. Import "
+            "cookies exported from a normal signed-in browser, then try again."
+        )
+    if _is_auth_url(page.url) or _looks_like_login_page(page):
+        raise RuntimeError(
+            "Kobo session is not signed in. Use the dashboard login flow or import "
+            "cookies into the local Playwright browser profile."
+        )
+
+
 def list_library_books(page_size: int = 60, include_annotations: bool = False) -> list[Book]:
     """Scrape all books from the signed-in Kobo library."""
     books_by_id: dict[str, Book] = {}
@@ -165,6 +183,7 @@ def list_library_books(page_size: int = 60, include_annotations: bool = False) -
                     timeout=30000,
                 )
                 page.wait_for_timeout(3000)
+                _ensure_library_access(page)
 
                 page_books = _scrape_page(page)
                 if not page_books:

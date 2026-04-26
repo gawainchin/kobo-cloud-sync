@@ -24,6 +24,41 @@ STATE_FILE = DATA_DIR / "state.json"
 DOWNLOADS_DIR = DATA_DIR / "downloads"
 PARSED_DIR = DATA_DIR / "parsed"
 BROWSER_PROFILE_DIR = DATA_DIR / "browser-profile"
+ENV_FILE = Path.cwd() / ".env"
+
+
+def current_settings() -> dict[str, str]:
+    return {
+        "KOBO_COUNTRY": KOBO_COUNTRY,
+        "KOBO_LANGUAGE": KOBO_LANGUAGE,
+    }
+
+
+def update_runtime_settings(kobo_country: str, kobo_language: str) -> None:
+    global KOBO_COUNTRY, KOBO_LANGUAGE
+
+    KOBO_COUNTRY = kobo_country.strip().lower() or "us"
+    KOBO_LANGUAGE = kobo_language.strip().lower() or "en"
+    os.environ["KOBO_COUNTRY"] = KOBO_COUNTRY
+    os.environ["KOBO_LANGUAGE"] = KOBO_LANGUAGE
+
+
+def save_settings(kobo_country: str, kobo_language: str) -> dict[str, str]:
+    update_runtime_settings(kobo_country, kobo_language)
+    values = current_settings()
+    existing: dict[str, str] = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if not line or line.lstrip().startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            existing[key.strip()] = value.strip()
+
+    existing.update(values)
+    ENV_FILE.write_text(
+        "".join(f"{key}={value}\n" for key, value in sorted(existing.items()))
+    )
+    return values
 
 
 def kobo_url(path: str = "") -> str:
