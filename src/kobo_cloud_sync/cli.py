@@ -4,14 +4,15 @@ from typing import Optional
 
 from . import __version__
 from .config import MARKDOWN_DIR, STATE_FILE
-from .export_flow import list_library_books
-from .login import check_session, import_cookies, login_interactive
 from .parser import parse_export
 from .publisher import publish_books
 from .state import State
+from .web import serve
 
 
 def _cmd_login(args: argparse.Namespace) -> int:
+    from .login import check_session, login_interactive
+
     if check_session():
         print("Existing Kobo session is already valid.")
         return 0
@@ -25,12 +26,16 @@ def _cmd_login(args: argparse.Namespace) -> int:
 
 
 def _cmd_import_cookies(args: argparse.Namespace) -> int:
+    from .login import import_cookies
+
     count = import_cookies(args.cookies_file)
     print(f"Imported {count} Kobo cookies into the browser profile.")
     return 0
 
 
 def _cmd_dry_run(args: argparse.Namespace) -> int:
+    from .export_flow import list_library_books
+
     books = list_library_books(page_size=args.page_size)
     print(f"Found {len(books)} Kobo library books.")
     for book in books:
@@ -41,6 +46,8 @@ def _cmd_dry_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_sync(args: argparse.Namespace) -> int:
+    from .export_flow import list_library_books
+
     books = list_library_books(
         page_size=args.page_size,
         include_annotations=not args.no_highlights,
@@ -62,6 +69,11 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 def _cmd_parse(args: argparse.Namespace) -> int:
     book = parse_export(args.file)
     print(f"Parsed: {book.title} by {book.author}")
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    serve(host=args.host, port=args.port)
     return 0
 
 
@@ -129,6 +141,14 @@ def build_parser() -> argparse.ArgumentParser:
     parse = subparsers.add_parser("parse", help="Parse a downloaded Kobo export HTML")
     parse.add_argument("file", type=Path)
     parse.set_defaults(func=_cmd_parse)
+
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run a tiny local web UI for authentication and sync",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.set_defaults(func=_cmd_serve)
 
     return parser
 

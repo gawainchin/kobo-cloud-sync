@@ -1,6 +1,11 @@
 from pathlib import Path
-from dotenv import load_dotenv
 import os
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - exercised in minimal environments
+    def load_dotenv() -> None:
+        return None
 
 load_dotenv()
 

@@ -52,9 +52,28 @@ kobo-cloud sync
 kobo-cloud sync --no-highlights
 kobo-cloud sync --output-dir /path/to/notes
 kobo-cloud parse /path/to/export.html
+kobo-cloud serve
 ```
 
 Generated Markdown defaults to `data/markdown`, with covers in `data/markdown/covers`.
+
+## Local Web UI
+
+If you want a lighter interface than the CLI, start the built-in local web UI:
+
+```bash
+kobo-cloud serve
+```
+
+Then open `http://127.0.0.1:8765` in your browser. The dashboard lets you:
+
+- Check whether your saved Kobo session is still valid.
+- Open the interactive login flow.
+- Import exported Kobo cookies from a local JSON file.
+- Preview your library with a dry run.
+- Run sync with custom output and state paths.
+
+This UI is intentionally small and local-only. The CLI remains the core interface.
 
 ## Development
 
