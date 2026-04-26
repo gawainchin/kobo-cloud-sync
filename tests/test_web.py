@@ -2,7 +2,7 @@ from io import BytesIO
 import time
 
 from kobo_cloud_sync.cli import build_parser
-from kobo_cloud_sync.login import SessionCheck
+from kobo_cloud_sync.login import CookieImportResult, SessionCheck
 from kobo_cloud_sync.models import Book
 from kobo_cloud_sync.web import KoboWebApp
 
@@ -124,10 +124,15 @@ def test_web_imports_uploaded_cookie_file(monkeypatch):
 
     def fake_import(content):
         imported["content"] = content
-        return 3
+        return CookieImportResult(
+            accepted=3,
+            rejected=0,
+            domains=[".kobo.com"],
+            rejected_reasons=[],
+        )
 
     monkeypatch.setattr("kobo_cloud_sync.web.check_session", lambda: False)
-    monkeypatch.setattr("kobo_cloud_sync.web.import_cookies_content", fake_import)
+    monkeypatch.setattr("kobo_cloud_sync.web.import_cookies_detailed", fake_import)
     app = KoboWebApp()
     boundary = "----kobo-test-boundary"
     body = (
@@ -150,15 +155,51 @@ def test_web_imports_uploaded_cookie_file(monkeypatch):
     assert status == "200 OK"
     assert "Imported 3 Kobo cookies into the browser profile." in response
     assert "Source: uploaded file kobo.cookies.json" in response
+    assert "Cookie domains: .kobo.com" in response
     assert "Next step: click Check session, then Dry run." in response
     assert imported["content"].startswith(b'[{"domain": ".kobo.com"')
+
+
+def test_web_import_reports_rejected_cookies(monkeypatch):
+    def fake_import(content):
+        return CookieImportResult(
+            accepted=2,
+            rejected=1,
+            domains=[".kobo.com"],
+            rejected_reasons=["bad@.kobo.com: invalid sameSite"],
+        )
+
+    monkeypatch.setattr("kobo_cloud_sync.web.import_cookies_detailed", fake_import)
+    app = KoboWebApp()
+    boundary = "----kobo-test-boundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="cookies_upload"; '
+        'filename="kobo.cookies.json"\r\n'
+        "Content-Type: application/json\r\n\r\n"
+        '[{"domain": ".kobo.com", "name": "session", "value": "redacted"}]\r\n'
+        f"--{boundary}--\r\n"
+    ).encode("utf-8")
+
+    status, response = _invoke(
+        app,
+        method="POST",
+        path="/import-cookies",
+        form_data=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+    )
+
+    assert status == "200 OK"
+    assert "Imported 2 Kobo cookies" in response
+    assert "1 cookies were rejected" in response
+    assert "bad@.kobo.com" in response
 
 
 def test_web_import_reports_zero_kobo_cookies(monkeypatch):
     def fake_import(content):
         raise ValueError("Cookie export did not contain any Kobo cookies.")
 
-    monkeypatch.setattr("kobo_cloud_sync.web.import_cookies_content", fake_import)
+    monkeypatch.setattr("kobo_cloud_sync.web.import_cookies_detailed", fake_import)
     app = KoboWebApp()
     boundary = "----kobo-test-boundary"
     body = (

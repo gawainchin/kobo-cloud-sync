@@ -24,6 +24,7 @@ STATE_FILE = DATA_DIR / "state.json"
 DOWNLOADS_DIR = DATA_DIR / "downloads"
 PARSED_DIR = DATA_DIR / "parsed"
 BROWSER_PROFILE_DIR = DATA_DIR / "browser-profile"
+STORED_COOKIES_FILE = DATA_DIR / "kobo.cookies.json"
 ENV_FILE = Path.cwd() / ".env"
 
 

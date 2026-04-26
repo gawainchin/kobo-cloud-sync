@@ -81,6 +81,12 @@ def import_cookies_content(cookie_content: bytes) -> int:
     return _import_cookies_content(cookie_content)
 
 
+def import_cookies_detailed(cookie_content: bytes):
+    from .login import import_cookies_detailed as _import_cookies_detailed
+
+    return _import_cookies_detailed(cookie_content)
+
+
 def login_interactive(timeout_seconds: int = 300, close_browser: bool = True) -> bool:
     from .login import login_interactive as _login_interactive
 
@@ -680,27 +686,33 @@ class KoboWebApp:
     def _handle_import_cookies(form: dict[str, FormValue]) -> WebResult:
         uploaded = form.get("cookies_upload")
         if isinstance(uploaded, UploadedFile) and uploaded.content:
-            count = import_cookies_content(uploaded.content)
-            return WebResult(
-                "Cookie import",
-                f"Imported {count} Kobo cookies into the browser profile.",
-                details=[
-                    f"Source: uploaded file {uploaded.filename}",
-                    "Next step: click Check session, then Dry run.",
-                ],
+            report = import_cookies_detailed(uploaded.content)
+            return KoboWebApp._cookie_import_result(
+                report, source=f"uploaded file {uploaded.filename}"
             )
 
         cookie_path = Path(
             str(form.get("cookies_file", "data/kobo.cookies.json"))
         ).expanduser()
-        count = import_cookies(cookie_path)
+        report = import_cookies_detailed(cookie_path.read_bytes())
+        return KoboWebApp._cookie_import_result(report, source=str(cookie_path))
+
+    @staticmethod
+    def _cookie_import_result(report, source: str) -> WebResult:
+        details = [f"Source: {source}"]
+        if report.domains:
+            details.append("Cookie domains: " + ", ".join(report.domains))
+        if report.rejected:
+            details.append(
+                f"{report.rejected} cookies were rejected by Playwright "
+                "and skipped (often sameSite=None without secure=true)."
+            )
+            details.extend(report.rejected_reasons[:3])
+        details.append("Next step: click Check session, then Dry run.")
         return WebResult(
             "Cookie import",
-            f"Imported {count} Kobo cookies into the browser profile.",
-            details=[
-                f"Source: {cookie_path}",
-                "Next step: click Check session, then Dry run.",
-            ],
+            f"Imported {report.accepted} Kobo cookies into the browser profile.",
+            details=details,
         )
 
     @staticmethod
