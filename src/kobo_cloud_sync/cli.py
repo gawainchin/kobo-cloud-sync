@@ -1,4 +1,6 @@
 import argparse
+from dataclasses import asdict, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +10,63 @@ from .parser import parse_export
 from .publisher import publish_books
 from .state import State
 from .web import serve
+
+
+def _format_book_summary(book, include_details: bool = False) -> str:
+    author = f" by {book.author}" if book.author else ""
+    status = f" [{book.status}]" if book.status else ""
+    summary = f"{book.title}{author}{status}"
+    if include_details:
+        details = [f"id: {book.id}"]
+        if book.read_url:
+            details.append(f"read: {book.read_url}")
+        if book.detail_url:
+            details.append(f"kobo: {book.detail_url}")
+        summary = f"{summary} ({'; '.join(details)})"
+    return summary
+
+
+def _book_payload_for_change_check(book) -> dict:
+    payload = asdict(book)
+    payload.pop("cover_image_path", None)
+    payload.pop("last_synced", None)
+    return payload
+
+
+def _book_changed(previous, current) -> bool:
+    if previous is None:
+        return True
+    return _book_payload_for_change_check(previous) != _book_payload_for_change_check(
+        current
+    )
+
+
+def _merge_highlights_only(previous, current):
+    if previous is None:
+        return current
+    return replace(
+        previous,
+        read_url=current.read_url or previous.read_url,
+        detail_url=current.detail_url or previous.detail_url,
+        annotations=current.annotations,
+    )
+
+
+def _pick_books(books) -> list:
+    if not books:
+        return []
+    for index, book in enumerate(books, start=1):
+        print(f"{index}. {_format_book_summary(book, include_details=True)}")
+    choice = input("Select book number to sync: ").strip()
+    try:
+        selected_index = int(choice)
+    except ValueError:
+        print(f"Invalid selection: {choice!r}")
+        return []
+    if selected_index < 1 or selected_index > len(books):
+        print(f"Selection out of range: {selected_index}")
+        return []
+    return [books[selected_index - 1]]
 
 
 def _cmd_login(args: argparse.Namespace) -> int:
@@ -36,33 +95,70 @@ def _cmd_import_cookies(args: argparse.Namespace) -> int:
 def _cmd_dry_run(args: argparse.Namespace) -> int:
     from .export_flow import list_library_books
 
-    books = list_library_books(page_size=args.page_size)
-    print(f"Found {len(books)} Kobo library books.")
+    books = list_library_books(
+        page_size=args.page_size,
+        book_query=args.book,
+        exact_book_query=args.exact_book,
+    )
+    if args.book:
+        print(f"Found {len(books)} Kobo library books matching {args.book!r}.")
+    else:
+        print(f"Found {len(books)} Kobo library books.")
     for book in books:
-        author = f" by {book.author}" if book.author else ""
-        status = f" [{book.status}]" if book.status else ""
-        print(f"- {book.title}{author}{status}")
+        print(f"- {_format_book_summary(book, include_details=bool(args.book))}")
     return 0
 
 
 def _cmd_sync(args: argparse.Namespace) -> int:
-    from .export_flow import list_library_books
+    from .export_flow import fetch_annotations_for_books, list_library_books
 
     books = list_library_books(
         page_size=args.page_size,
-        include_annotations=not args.no_highlights,
+        include_annotations=not args.no_highlights
+        and not args.pick
+        and not args.highlights_only,
+        book_query=args.book,
+        exact_book_query=args.exact_book,
     )
+    if args.book and not books:
+        print(f"No Kobo library books matched {args.book!r}.")
+        return 1
+    if args.pick:
+        books = _pick_books(books)
+        if not books:
+            return 1
+    if not args.no_highlights and (args.pick or args.highlights_only):
+        books = fetch_annotations_for_books(books)
+
     state = State(args.state_file)
+    if args.highlights_only:
+        books = [
+            _merge_highlights_only(state.books.get(book.id), book) for book in books
+        ]
+    if args.changed_only:
+        books = [book for book in books if _book_changed(state.books.get(book.id), book)]
+
+    synced_at = datetime.now()
     for book in books:
+        book.last_synced = synced_at
         state.books[book.id] = book
     state.save()
 
-    paths = publish_books(books, args.output_dir)
+    paths = publish_books(
+        books,
+        args.output_dir,
+        download_covers=not args.highlights_only,
+    )
     print(f"Synced {len(books)} books to {args.output_dir}")
-    print(f"Downloaded covers to {args.output_dir / 'covers'}")
+    if args.highlights_only:
+        print("Skipped cover downloads because --highlights-only was set.")
+    else:
+        print(f"Downloaded covers to {args.output_dir / 'covers'}")
     print(f"Wrote {len(paths)} Markdown files.")
     if args.no_highlights:
         print("Skipped highlights because --no-highlights was set.")
+    if args.changed_only and not books:
+        print("No changed books to publish.")
     return 0
 
 
@@ -112,6 +208,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="List Kobo library books without writing Markdown",
     )
     dry_run.add_argument("--page-size", type=int, default=60)
+    dry_run.add_argument(
+        "--book",
+        help="Only list books whose title, author, series, subtitle, or Kobo id matches this text.",
+    )
+    dry_run.add_argument(
+        "--exact-book",
+        action="store_true",
+        help="Require --book to match a title, author, series, subtitle, or Kobo id exactly.",
+    )
     dry_run.set_defaults(func=_cmd_dry_run)
 
     sync = subparsers.add_parser(
@@ -131,10 +236,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=STATE_FILE,
         help="Path to the local state JSON file.",
     )
-    sync.add_argument(
+    highlight_group = sync.add_mutually_exclusive_group()
+    highlight_group.add_argument(
         "--no-highlights",
         action="store_true",
         help="Skip Kobo reader annotation API calls.",
+    )
+    highlight_group.add_argument(
+        "--highlights-only",
+        action="store_true",
+        help="Refresh annotations and Markdown without downloading covers or replacing saved metadata.",
+    )
+    sync.add_argument(
+        "--book",
+        help="Only sync books whose title, author, series, subtitle, or Kobo id matches this text.",
+    )
+    sync.add_argument(
+        "--exact-book",
+        action="store_true",
+        help="Require --book to match a title, author, series, subtitle, or Kobo id exactly.",
+    )
+    sync.add_argument(
+        "--pick",
+        action="store_true",
+        help="Choose one book interactively from the matched library books before syncing.",
+    )
+    sync.add_argument(
+        "--changed-only",
+        action="store_true",
+        help="Only write Markdown for books whose synced data differs from local state.",
     )
     sync.set_defaults(func=_cmd_sync)
 

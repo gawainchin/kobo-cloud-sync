@@ -54,13 +54,18 @@ def publish_book(book: Book, output_dir: Optional[Path] = None) -> Path:
     return out_path
 
 
-def publish_books(books: list[Book], output_dir: Path = MARKDOWN_DIR) -> list[Path]:
+def publish_books(
+    books: list[Book],
+    output_dir: Path = MARKDOWN_DIR,
+    download_covers: bool = True,
+) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = []
     for book in books:
-        try:
-            download_cover(book, output_dir / "covers")
-        except Exception as exc:
-            print(f"Could not download cover for {book.title}: {exc}")
+        if download_covers:
+            try:
+                download_cover(book, output_dir / "covers")
+            except Exception as exc:
+                print(f"Could not download cover for {book.title}: {exc}")
         paths.append(publish_book(book, output_dir))
     return paths

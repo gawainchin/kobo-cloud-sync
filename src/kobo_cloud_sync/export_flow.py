@@ -40,6 +40,27 @@ def _reader_id_from_url(read_url: str) -> str:
     return path.split("/")[0] if path else ""
 
 
+def _book_matches_query(
+    book: Book,
+    query: Optional[str],
+    exact: bool = False,
+) -> bool:
+    if not query:
+        return True
+
+    normalized_query = query.casefold()
+    fields = (
+        book.id,
+        book.title,
+        book.author,
+        book.subtitle,
+        book.series,
+    )
+    if exact:
+        return any(normalized_query == field.casefold() for field in fields if field)
+    return any(normalized_query in field.casefold() for field in fields if field)
+
+
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -165,9 +186,15 @@ def _ensure_library_access(page: Page) -> None:
         )
 
 
-def list_library_books(page_size: int = 60, include_annotations: bool = False) -> list[Book]:
-    """Scrape all books from the signed-in Kobo library."""
+def list_library_books(
+    page_size: int = 60,
+    include_annotations: bool = False,
+    book_query: Optional[str] = None,
+    exact_book_query: bool = False,
+) -> list[Book]:
+    """Scrape books from the signed-in Kobo library."""
     books_by_id: dict[str, Book] = {}
+    seen_book_ids: set[str] = set()
 
     with sync_playwright() as playwright:
         context = _open_context(playwright, headless=False)
@@ -189,14 +216,18 @@ def list_library_books(page_size: int = 60, include_annotations: bool = False) -
                 if not page_books:
                     break
 
-                previous_count = len(books_by_id)
+                found_new_book = False
                 for book in page_books:
-                    books_by_id[book.id] = book
+                    if book.id not in seen_book_ids:
+                        seen_book_ids.add(book.id)
+                        found_new_book = True
+                    if _book_matches_query(book, book_query, exact_book_query):
+                        books_by_id[book.id] = book
 
                 has_next = page.locator(
                     f'a[href*="pageNumber={page_number + 1}"]'
                 ).count()
-                if not has_next or len(books_by_id) == previous_count:
+                if not has_next or not found_new_book:
                     break
                 page_number += 1
 
@@ -213,3 +244,26 @@ def list_library_books(page_size: int = 60, include_annotations: bool = False) -
             context.close()
 
     return list(books_by_id.values())
+
+
+def fetch_annotations_for_books(books: list[Book]) -> list[Book]:
+    """Fetch reader annotations for already-discovered Kobo books."""
+    if not books:
+        return books
+
+    with sync_playwright() as playwright:
+        context = _open_context(playwright, headless=False)
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            for book in books:
+                reader_id = _reader_id_from_url(book.read_url)
+                if not reader_id:
+                    continue
+                try:
+                    book.annotations = _fetch_annotations(page, reader_id)
+                except Exception as exc:
+                    print(f"Could not sync highlights for {book.title}: {exc}")
+        finally:
+            context.close()
+
+    return books

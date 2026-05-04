@@ -8,7 +8,8 @@ import threading
 import traceback
 import uuid
 from contextlib import redirect_stdout
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Callable, Optional, Union
@@ -31,7 +32,7 @@ class WebResult:
     title: str
     message: str
     details: list[str] = field(default_factory=list)
-    books: list[str] = field(default_factory=list)
+    books: list = field(default_factory=list)
     error: bool = False
     job_id: Optional[str] = None
 
@@ -44,7 +45,7 @@ class WebJob:
     progress: int = 5
     message: str = "Starting..."
     details: list[str] = field(default_factory=list)
-    books: list[str] = field(default_factory=list)
+    books: list = field(default_factory=list)
     error: bool = False
 
 
@@ -99,12 +100,16 @@ def login_interactive(timeout_seconds: int = 300, close_browser: bool = True) ->
 def list_library_books(
     page_size: int = 60,
     include_annotations: bool = False,
+    book_query: Optional[str] = None,
+    exact_book_query: bool = False,
 ):
     from .export_flow import list_library_books as _list_library_books
 
     return _list_library_books(
         page_size=page_size,
         include_annotations=include_annotations,
+        book_query=book_query,
+        exact_book_query=exact_book_query,
     )
 
 
@@ -114,6 +119,38 @@ def current_settings() -> dict[str, str]:
 
 def save_settings(kobo_country: str, kobo_language: str) -> dict[str, str]:
     return config.save_settings(kobo_country, kobo_language)
+
+
+def _book_payload_for_change_check(book) -> dict:
+    payload = asdict(book)
+    payload.pop("cover_image_path", None)
+    payload.pop("last_synced", None)
+    return payload
+
+
+def _book_changed(previous, current) -> bool:
+    if previous is None:
+        return True
+    return _book_payload_for_change_check(previous) != _book_payload_for_change_check(
+        current
+    )
+
+
+def _merge_highlights_only(previous, current):
+    if previous is None:
+        return current
+    return replace(
+        previous,
+        read_url=current.read_url or previous.read_url,
+        detail_url=current.detail_url or previous.detail_url,
+        annotations=current.annotations,
+    )
+
+
+def _book_summary(book) -> str:
+    author = f" by {book.author}" if book.author else ""
+    status = f" [{book.status}]" if book.status else ""
+    return f"{book.title}{author}{status}"
 
 
 def _render_page(
@@ -273,6 +310,15 @@ def _render_page(
         font: inherit;
         cursor: pointer;
       }}
+      a.button-link {{
+        display: inline-block;
+        border-radius: 999px;
+        padding: 10px 14px;
+        background: var(--accent);
+        color: #fffaf2;
+        text-decoration: none;
+        font-size: 0.92rem;
+      }}
       ul {{
         margin: 12px 0 0;
         padding-left: 20px;
@@ -354,6 +400,14 @@ def _render_page(
               Page size
               <input type="number" name="page_size" min="1" value="60">
             </label>
+            <label>
+              Book filter
+              <input type="text" name="book" placeholder="Title, author, series, or Kobo id">
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="exact_book" value="1">
+              Exact match
+            </label>
             <button type="submit">List library books</button>
           </form>
         </section>
@@ -375,9 +429,25 @@ def _render_page(
               Page size
               <input type="number" name="page_size" min="1" value="60">
             </label>
+            <label>
+              Book filter
+              <input type="text" name="book" placeholder="Title, author, series, or Kobo id">
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="exact_book" value="1">
+              Exact match
+            </label>
             <label class="checkbox">
               <input type="checkbox" name="no_highlights" value="1">
               Skip highlights
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="highlights_only" value="1">
+              Highlights only
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="changed_only" value="1">
+              Only write changed books
             </label>
             <button type="submit">Start sync</button>
           </form>
@@ -399,7 +469,44 @@ def _render_page(
             node.innerHTML = "";
             for (const item of items || []) {{
               const li = document.createElement("li");
-              li.textContent = item;
+              if (typeof item === "object") {{
+                const span = document.createElement("span");
+                span.textContent = item.label;
+                li.appendChild(span);
+                if (item.book_id) {{
+                  const form = document.createElement("form");
+                  form.method = "post";
+                  form.action = "/sync";
+                  form.style.display = "inline-block";
+                  form.style.marginLeft = "10px";
+                  const book = document.createElement("input");
+                  book.type = "hidden";
+                  book.name = "book";
+                  book.value = item.book_id;
+                  const exact = document.createElement("input");
+                  exact.type = "hidden";
+                  exact.name = "exact_book";
+                  exact.value = "1";
+                  const button = document.createElement("button");
+                  button.type = "submit";
+                  button.textContent = "Sync this book";
+                  form.appendChild(book);
+                  form.appendChild(exact);
+                  form.appendChild(button);
+                  li.appendChild(form);
+                }}
+                if (item.review_id) {{
+                  const link = document.createElement("a");
+                  link.href = `/review?id=${{encodeURIComponent(item.review_id)}}`;
+                  link.target = "_blank";
+                  link.className = "button-link";
+                  link.style.marginLeft = "10px";
+                  link.textContent = "Review Markdown";
+                  li.appendChild(link);
+                }}
+              }} else {{
+                li.textContent = item;
+              }}
               node.appendChild(li);
             }}
           }};
@@ -418,6 +525,84 @@ def _render_page(
           poll();
         }}
       </script>
+    </main>
+  </body>
+</html>
+"""
+    return page.encode("utf-8")
+
+
+def _render_review_page(
+    title: str,
+    subtitle: str,
+    markdown: str,
+    error: bool = False,
+) -> bytes:
+    status_class = "error" if error else "ok"
+    page = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{html.escape(title)} - Kobo Cloud Sync</title>
+    <style>
+      :root {{
+        color-scheme: light;
+        --bg: #f4efe4;
+        --panel: #fffaf2;
+        --text: #1d1b18;
+        --muted: #6d655b;
+        --line: #d8c9af;
+        --accent: #0c7c59;
+        --accent-2: #d95d39;
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+        color: var(--text);
+        background: linear-gradient(180deg, #f8f2e8 0%, var(--bg) 100%);
+      }}
+      main {{
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 32px 20px 64px;
+      }}
+      .panel {{
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 20px;
+      }}
+      .eyebrow {{
+        margin: 0 0 8px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }}
+      h1 {{ margin: 0 0 10px; }}
+      .ok {{ color: var(--accent); }}
+      .error {{ color: var(--accent-2); }}
+      pre {{
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        line-height: 1.5;
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <p class="eyebrow">Markdown review</p>
+        <h1>{html.escape(title)}</h1>
+        <p class="{status_class}">{html.escape(subtitle)}</p>
+        <pre>{html.escape(markdown)}</pre>
+      </section>
     </main>
   </body>
 </html>
@@ -481,6 +666,7 @@ class KoboWebApp:
     def __init__(self) -> None:
         self._session_status: Optional[bool] = None
         self._jobs: dict[str, WebJob] = {}
+        self._reviews: dict[str, Path] = {}
         self._lock = threading.Lock()
 
     def __call__(self, environ: dict, start_response: Callable) -> list[bytes]:
@@ -494,6 +680,11 @@ class KoboWebApp:
             query = parse_qs(environ.get("QUERY_STRING", ""))
             job_id = query.get("id", [""])[-1]
             return self._respond_json(start_response, self._job_payload(job_id))
+
+        if method == "GET" and path == "/review":
+            query = parse_qs(environ.get("QUERY_STRING", ""))
+            review_id = query.get("id", [""])[-1]
+            return self._respond(start_response, self._render_review(review_id))
 
         if method == "POST":
             form = _parse_form(environ)
@@ -604,6 +795,32 @@ class KoboWebApp:
                 "books": job.books,
                 "error": job.error,
             }
+
+    def _register_review(self, path: Path) -> str:
+        review_id = uuid.uuid4().hex
+        with self._lock:
+            self._reviews[review_id] = path
+        return review_id
+
+    def _render_review(self, review_id: str) -> bytes:
+        with self._lock:
+            path = self._reviews.get(review_id)
+
+        if not path:
+            return _render_review_page(
+                "Review not found",
+                "This review link is no longer available.",
+                "",
+                error=True,
+            )
+        if not path.exists():
+            return _render_review_page(
+                "Review not found",
+                f"The Markdown file does not exist: {path}",
+                "",
+                error=True,
+            )
+        return _render_review_page(path.name, str(path), path.read_text())
 
     def _handle_check_session(self) -> WebResult:
         diagnosis = diagnose_session()
@@ -718,15 +935,30 @@ class KoboWebApp:
     @staticmethod
     def _handle_dry_run(form: dict[str, FormValue]) -> WebResult:
         page_size = int(form.get("page_size", "60") or "60")
-        books = list_library_books(page_size=page_size)
+        book_query = str(form.get("book", "")).strip() or None
+        exact_book_query = form.get("exact_book") == "1"
+        books = list_library_books(
+            page_size=page_size,
+            book_query=book_query,
+            exact_book_query=exact_book_query,
+        )
         summaries = []
         for book in books:
-            author = f" by {book.author}" if book.author else ""
-            status = f" [{book.status}]" if book.status else ""
-            summaries.append(f"{book.title}{author}{status}")
+            if book_query:
+                summaries.append(
+                    {
+                        "label": f"{_book_summary(book)} (id: {book.id})",
+                        "book_id": book.id,
+                    }
+                )
+            else:
+                summaries.append(_book_summary(book))
+        message = f"Found {len(books)} Kobo library books."
+        if book_query:
+            message = f"Found {len(books)} Kobo library books matching {book_query!r}."
         return WebResult(
             "Dry run",
-            f"Found {len(books)} Kobo library books.",
+            message,
             books=summaries,
         )
 
@@ -734,33 +966,82 @@ class KoboWebApp:
         self._update_job(job.id, progress=35, message="Opening Kobo library...")
         return self._handle_dry_run(form)
 
-    @staticmethod
-    def _handle_sync(form: dict[str, FormValue]) -> WebResult:
+    def _handle_sync(self, form: dict[str, FormValue]) -> WebResult:
+        from .export_flow import fetch_annotations_for_books
+
         page_size = int(form.get("page_size", "60") or "60")
         output_dir = Path(str(form.get("output_dir", str(MARKDOWN_DIR)))).expanduser()
         state_file = Path(str(form.get("state_file", str(STATE_FILE)))).expanduser()
         no_highlights = form.get("no_highlights") == "1"
+        book_query = str(form.get("book", "")).strip() or None
+        exact_book_query = form.get("exact_book") == "1"
+        highlights_only = form.get("highlights_only") == "1"
+        changed_only = form.get("changed_only") == "1"
+        if no_highlights and highlights_only:
+            return WebResult(
+                "Sync",
+                "Choose either Skip highlights or Highlights only, not both.",
+                error=True,
+            )
 
         books = list_library_books(
             page_size=page_size,
-            include_annotations=not no_highlights,
+            include_annotations=not no_highlights and not highlights_only,
+            book_query=book_query,
+            exact_book_query=exact_book_query,
         )
+        if book_query and not books:
+            return WebResult(
+                "Sync",
+                f"No Kobo library books matched {book_query!r}.",
+                error=True,
+            )
+        if highlights_only:
+            books = fetch_annotations_for_books(books)
+
         state = State(state_file)
+        if highlights_only:
+            books = [
+                _merge_highlights_only(state.books.get(book.id), book) for book in books
+            ]
+        if changed_only:
+            books = [
+                book for book in books if _book_changed(state.books.get(book.id), book)
+            ]
+
+        synced_at = datetime.now()
         for book in books:
+            book.last_synced = synced_at
             state.books[book.id] = book
         state.save()
 
-        paths = publish_books(books, output_dir)
-        details = [
-            f"Downloaded covers to {output_dir / 'covers'}",
-            f"Wrote {len(paths)} Markdown files.",
-        ]
+        paths = publish_books(
+            books,
+            output_dir,
+            download_covers=not highlights_only,
+        )
+        reviews = []
+        for book, path in zip(books, paths):
+            reviews.append(
+                {
+                    "label": f"{_book_summary(book)} -> {path.name}",
+                    "review_id": self._register_review(path),
+                }
+            )
+        details = [f"Wrote {len(paths)} Markdown files."]
+        if highlights_only:
+            details.insert(0, "Skipped cover downloads because Highlights only was selected.")
+        else:
+            details.insert(0, f"Downloaded covers to {output_dir / 'covers'}")
         if no_highlights:
             details.append("Skipped highlights because the checkbox was selected.")
+        if changed_only and not books:
+            details.append("No changed books to publish.")
         return WebResult(
             "Sync",
             f"Synced {len(books)} books to {output_dir}",
             details=details,
+            books=reviews,
         )
 
     def _run_sync_job(self, form: dict[str, FormValue], job: WebJob) -> WebResult:

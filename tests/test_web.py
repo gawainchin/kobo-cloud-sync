@@ -7,7 +7,14 @@ from kobo_cloud_sync.models import Book
 from kobo_cloud_sync.web import KoboWebApp
 
 
-def _invoke(app, method="GET", path="/", form_data="", content_type=None):
+def _invoke(
+    app,
+    method="GET",
+    path="/",
+    form_data="",
+    content_type=None,
+    query_string="",
+):
     captured = {}
 
     def start_response(status, headers):
@@ -20,6 +27,7 @@ def _invoke(app, method="GET", path="/", form_data="", content_type=None):
         "PATH_INFO": path,
         "CONTENT_LENGTH": str(len(body)),
         "wsgi.input": BytesIO(body),
+        "QUERY_STRING": query_string,
     }
     if content_type:
         environ["CONTENT_TYPE"] = content_type
@@ -53,6 +61,9 @@ def test_web_home_page_renders_session_status(monkeypatch):
     assert 'type="file" name="cookies_upload"' in response
     assert "Kobo store" in response
     assert 'name="kobo_country"' in response
+    assert 'name="exact_book"' in response
+    assert 'name="highlights_only"' in response
+    assert 'name="changed_only"' in response
 
 
 def test_web_check_session_updates_status(monkeypatch):
@@ -252,7 +263,10 @@ def test_web_dry_run_starts_progress_job(monkeypatch):
     monkeypatch.setattr("kobo_cloud_sync.web.check_session", lambda: True)
     monkeypatch.setattr(
         "kobo_cloud_sync.web.list_library_books",
-        lambda page_size=60, include_annotations=False: [
+        lambda page_size=60,
+        include_annotations=False,
+        book_query=None,
+        exact_book_query=False: [
             Book(id="1", title="Book One", author="Author A", status="Finished"),
             Book(id="2", title="Book Two", author="Author B"),
         ],
@@ -281,3 +295,111 @@ def test_web_dry_run_starts_progress_job(monkeypatch):
     assert payload["progress"] == 100
     assert payload["message"] == "Found 2 Kobo library books."
     assert "Book One by Author A [Finished]" in payload["books"]
+
+
+def test_web_dry_run_passes_book_filter(monkeypatch):
+    calls = {}
+
+    def fake_list_library_books(
+        page_size=60,
+        include_annotations=False,
+        book_query=None,
+        exact_book_query=False,
+    ):
+        calls["page_size"] = page_size
+        calls["include_annotations"] = include_annotations
+        calls["book_query"] = book_query
+        calls["exact_book_query"] = exact_book_query
+        return [Book(id="1", title="Book One", author="Author A")]
+
+    monkeypatch.setattr("kobo_cloud_sync.web.check_session", lambda: True)
+    monkeypatch.setattr(
+        "kobo_cloud_sync.web.list_library_books",
+        fake_list_library_books,
+    )
+    app = KoboWebApp()
+
+    status, response = _invoke(
+        app,
+        method="POST",
+        path="/dry-run",
+        form_data="page_size=20&book=Book+One&exact_book=1",
+    )
+
+    assert status == "200 OK"
+    assert "Dry run started." in response
+
+    job_id = next(iter(app._jobs))
+    for _ in range(20):
+        if app._job_payload(job_id)["status"] == "done":
+            break
+        time.sleep(0.01)
+
+    payload = app._job_payload(job_id)
+    assert payload["message"] == "Found 1 Kobo library books matching 'Book One'."
+    assert calls == {
+        "page_size": 20,
+        "include_annotations": False,
+        "book_query": "Book One",
+        "exact_book_query": True,
+    }
+    assert payload["books"][0]["book_id"] == "1"
+
+
+def test_web_sync_result_can_review_generated_markdown(monkeypatch, tmp_path):
+    output_dir = tmp_path / "notes"
+    state_file = tmp_path / "state.json"
+
+    monkeypatch.setattr(
+        "kobo_cloud_sync.web.list_library_books",
+        lambda page_size=60,
+        include_annotations=False,
+        book_query=None,
+        exact_book_query=False: [
+            Book(id="1", title="Book One", author="Author A"),
+        ],
+    )
+
+    def fake_publish_books(books, output_dir, download_covers=True):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "Book One.md"
+        path.write_text("# Book One\n\n> Highlight one\n")
+        return [path]
+
+    monkeypatch.setattr("kobo_cloud_sync.web.publish_books", fake_publish_books)
+    app = KoboWebApp()
+
+    status, response = _invoke(
+        app,
+        method="POST",
+        path="/sync",
+        form_data=(
+            f"output_dir={output_dir}&state_file={state_file}"
+            "&page_size=20&book=Book+One"
+        ),
+    )
+
+    assert status == "200 OK"
+    assert "Sync started." in response
+
+    job_id = next(iter(app._jobs))
+    for _ in range(20):
+        if app._job_payload(job_id)["status"] == "done":
+            break
+        time.sleep(0.01)
+
+    payload = app._job_payload(job_id)
+    assert payload["message"] == f"Synced 1 books to {output_dir}"
+    assert payload["books"][0]["label"] == "Book One by Author A -> Book One.md"
+    review_id = payload["books"][0]["review_id"]
+
+    review_status, review_response = _invoke(
+        app,
+        path="/review",
+        query_string=f"id={review_id}",
+    )
+
+    assert review_status == "200 OK"
+    assert "Markdown review" in review_response
+    assert "# Book One" in review_response
+    assert "&gt; Highlight one" in review_response

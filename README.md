@@ -48,18 +48,28 @@ Cookie files and browser profiles are ignored by git.
 
 ```bash
 kobo-cloud dry-run
+kobo-cloud dry-run --book "Atomic Habits"
 kobo-cloud sync
 kobo-cloud sync --no-highlights
+kobo-cloud sync --book "Atomic Habits"
+kobo-cloud sync --book "Atomic Habits" --exact-book
+kobo-cloud sync --book "Atomic" --pick
+kobo-cloud sync --book "Atomic Habits" --highlights-only
+kobo-cloud sync --changed-only
 kobo-cloud sync --output-dir /path/to/notes
 kobo-cloud parse /path/to/export.html
 kobo-cloud serve
 ```
 
 Generated Markdown defaults to `data/markdown`, with covers in `data/markdown/covers`.
+Use `--book` with any title, author, series, subtitle, or Kobo id text to sync only matching books and their highlights.
+Use `--exact-book` for exact field matching, `--pick` to choose one match interactively, `--highlights-only` to refresh annotations without downloading covers, and `--changed-only` to skip unchanged Markdown writes.
 
 ## Local Web UI
 
 If you want a lighter interface than the CLI, start the built-in local web UI:
+
+![Kobo Cloud Sync web UI feature demonstration with handwritten callouts for filtered sync and Markdown review](docs/assets/kobo-cloud-sync-web-features-handwritten.png)
 
 ```bash
 kobo-cloud serve
@@ -71,7 +81,9 @@ Then open `http://127.0.0.1:8765` in your browser. The dashboard lets you:
 - Open the interactive login flow.
 - Import exported Kobo cookies from a local JSON file.
 - Preview your library with a dry run.
-- Run sync with custom output and state paths.
+- Run sync with custom output and state paths, optionally filtered to one book.
+- Search for matching books and sync one result from the dry-run results.
+- Review generated Markdown from the sync result panel.
 
 This UI is intentionally small and local-only. The CLI remains the core interface.
 
