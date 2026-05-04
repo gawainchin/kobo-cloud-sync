@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import cgi
 import html
 import io
 import json
@@ -12,7 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from typing import Callable, Optional, Union
+from typing import Callable, Optional
 from urllib.parse import parse_qs
 from wsgiref.simple_server import WSGIServer
 from wsgiref.simple_server import make_server
@@ -21,6 +20,8 @@ from . import config
 from .config import BROWSER_PROFILE_DIR, MARKDOWN_DIR, STATE_FILE
 from .publisher import publish_books
 from .state import State
+from .web_forms import FormValue, UploadedFile, parse_form
+from .web_jobs import WebJob, WebJobStore
 
 
 class ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
@@ -35,27 +36,6 @@ class WebResult:
     books: list = field(default_factory=list)
     error: bool = False
     job_id: Optional[str] = None
-
-
-@dataclass
-class WebJob:
-    id: str
-    title: str
-    status: str = "running"
-    progress: int = 5
-    message: str = "Starting..."
-    details: list[str] = field(default_factory=list)
-    books: list = field(default_factory=list)
-    error: bool = False
-
-
-@dataclass
-class UploadedFile:
-    filename: str
-    content: bytes
-
-
-FormValue = Union[str, UploadedFile]
 
 
 def check_session() -> bool:
@@ -630,42 +610,10 @@ def _capture_output(func: Callable[[], WebResult]) -> WebResult:
     return result
 
 
-def _parse_form(environ: dict) -> dict[str, FormValue]:
-    length = int(environ.get("CONTENT_LENGTH") or "0")
-    content_type = environ.get("CONTENT_TYPE", "")
-    if content_type.startswith("multipart/form-data"):
-        fields = cgi.FieldStorage(
-            fp=environ["wsgi.input"],
-            environ={
-                "REQUEST_METHOD": environ.get("REQUEST_METHOD", "POST"),
-                "CONTENT_TYPE": content_type,
-                "CONTENT_LENGTH": str(length),
-            },
-            keep_blank_values=True,
-        )
-        form: dict[str, FormValue] = {}
-        for key in fields:
-            field = fields[key]
-            if isinstance(field, list):
-                field = field[-1]
-            if field.filename:
-                form[key] = UploadedFile(
-                    filename=field.filename,
-                    content=field.file.read(),
-                )
-            else:
-                form[key] = field.value
-        return form
-
-    body = environ["wsgi.input"].read(length).decode("utf-8")
-    parsed = parse_qs(body)
-    return {key: values[-1] for key, values in parsed.items()}
-
-
 class KoboWebApp:
     def __init__(self) -> None:
         self._session_status: Optional[bool] = None
-        self._jobs: dict[str, WebJob] = {}
+        self._jobs = WebJobStore()
         self._reviews: dict[str, Path] = {}
         self._lock = threading.Lock()
 
@@ -679,7 +627,7 @@ class KoboWebApp:
         if method == "GET" and path == "/job-status":
             query = parse_qs(environ.get("QUERY_STRING", ""))
             job_id = query.get("id", [""])[-1]
-            return self._respond_json(start_response, self._job_payload(job_id))
+            return self._respond_json(start_response, self._jobs.payload(job_id))
 
         if method == "GET" and path == "/review":
             query = parse_qs(environ.get("QUERY_STRING", ""))
@@ -687,7 +635,7 @@ class KoboWebApp:
             return self._respond(start_response, self._render_review(review_id))
 
         if method == "POST":
-            form = _parse_form(environ)
+            form = parse_form(environ)
             handlers = {
                 "/check-session": lambda: self._handle_check_session(),
                 "/settings": lambda: self._handle_settings(form),
@@ -719,15 +667,13 @@ class KoboWebApp:
         return self._respond(start_response, b"Not found", status="404 Not Found")
 
     def _start_job(self, title: str, target: Callable[[WebJob], WebResult]) -> WebResult:
-        job = WebJob(id=uuid.uuid4().hex, title=title)
-        with self._lock:
-            self._jobs[job.id] = job
+        job = self._jobs.create(title)
 
         def run() -> None:
             try:
-                self._update_job(job.id, progress=20, message=f"{title} running...")
+                self._jobs.update(job.id, progress=20, message=f"{title} running...")
                 result = target(job)
-                self._update_job(
+                self._jobs.update(
                     job.id,
                     status="done",
                     progress=100,
@@ -744,7 +690,7 @@ class KoboWebApp:
                     for line in traceback.format_exception_only(type(exc), exc)
                     if line.strip()
                 ]
-                self._update_job(
+                self._jobs.update(
                     job.id,
                     status="done",
                     progress=100,
@@ -764,37 +710,7 @@ class KoboWebApp:
         )
 
     def _update_job(self, job_id: str, **updates) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if not job:
-                return
-            for key, value in updates.items():
-                setattr(job, key, value)
-
-    def _job_payload(self, job_id: str) -> dict:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if not job:
-                return {
-                    "id": job_id,
-                    "title": "Job",
-                    "status": "done",
-                    "progress": 100,
-                    "message": "Job not found.",
-                    "details": [],
-                    "books": [],
-                    "error": True,
-                }
-            return {
-                "id": job.id,
-                "title": job.title,
-                "status": job.status,
-                "progress": job.progress,
-                "message": job.message,
-                "details": job.details,
-                "books": job.books,
-                "error": job.error,
-            }
+        self._jobs.update(job_id, **updates)
 
     def _register_review(self, path: Path) -> str:
         review_id = uuid.uuid4().hex

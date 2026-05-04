@@ -100,4 +100,5 @@ The package exposes a console script:
 kobo-cloud --help
 ```
 
-Agent workflow guidance lives in `skills/kobo-cloud-sync/SKILL.md`.
+Agent workflow guidance lives in `skills/kobo-cloud-sync/SKILL.md`; the
+roadmap for evolving that guidance lives in `skill-progression-map.md`.

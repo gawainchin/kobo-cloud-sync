@@ -1,0 +1,45 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Kobo Cloud Sync",
+    "subtitle": "Sync Kobo to Markdown",
+    "description": "Kobo Cloud Sync helps users import a signed-in Kobo session, preview their Kobo cloud library, and sync book metadata, cover images, and reader highlights into local Markdown files.",
+    "category": "PRODUCTIVITY"
+  },
+  "tools": {},
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for unrelated calendar requests.",
+      "user_prompt": "What meetings do I have tomorrow?",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because the request is outside Kobo library sync workflows.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for general ebook recommendations.",
+      "user_prompt": "Recommend five science fiction books I might enjoy.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it does not provide book recommendations.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for requests to buy books.",
+      "user_prompt": "Buy the latest Kobo edition of this novel for me.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it does not purchase books or perform store checkout actions.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for cloud storage sync outside Kobo.",
+      "user_prompt": "Sync my Kindle highlights to Notion.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it only supports Kobo library and Markdown workflows.",
+      "expected_output_url": null
+    }
+  ]
+}
